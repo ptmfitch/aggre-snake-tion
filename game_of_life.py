@@ -1,15 +1,15 @@
 import sys
-from time import time
+from time import time, sleep
 
 from pymongo import MongoClient, ASCENDING
 
 # TODO make this config a queryable document
 DB = "snake"
 COLL = "grid"
-SIZE_X = 10
-SIZE_Y = 10
+SIZE_X = 5
+SIZE_Y = 5
 SNAKE_START_SIZE = 3
-REFRESH_SECONDS = 10 # Fastest refresh in charts is every 10s
+REFRESH_SECONDS = 3 # Fastest refresh in charts is every 10s
 
 
 def init_grid(db):
@@ -27,8 +27,6 @@ def init_grid(db):
   pipeline = [
     { '$set': {
       # Randomly place the first egg anywhere
-      # TODO improve by using a random selection
-      # from a valid array of tiles
       'egg': {
         'x': { '$floor': { '$multiply': [ { '$rand': {} }, SIZE_X ] } },
         'y': { '$floor': { '$multiply': [ { '$rand': {} }, SIZE_Y ] } }
@@ -54,14 +52,14 @@ def init_grid(db):
                 'if': { '$gt': [ '$egg.y', { '$divide': [ SIZE_Y, 2 ] } ] },
                 'then': { '$floor': { '$multiply': [ 
                   { '$rand': {} },
-                  { '$divide': [ SIZE_Y, 2 ] } 
+                  { '$floor': { '$divide': [ SIZE_Y, 2 ] } }
                 ] } },
                 'else': { '$add': [
                   { '$floor': { '$multiply': [ 
                     { '$rand': {} },
                     { '$divide': [ SIZE_Y, 2 ] } 
                   ] } },
-                  { '$divide': [ SIZE_Y, 2 ] }
+                  { '$floor': { '$divide': [ SIZE_Y, 2 ] } }
                 ] }
               }
             }
@@ -122,75 +120,110 @@ def next_turn(db):
       # Increment the turn number while we're here
       'turn': { '$add': [ '$turn', 1 ] },
       # Set the new values for the snake array
-      'snake': {
-        '$let': {
-          'vars': {
-            # Borrowing some Seq names from Scala
-            # HTT (head, tail)
-            # IIL (init, last)
-            'head': { '$first': '$snake' },
-            'init': { '$slice': [ 
+      'snake': { '$let': {
+        'vars': {
+          # Borrowing some Seq names from Scala
+          # HTT (head, tail)
+          # IIL (init, last)
+          # NB keep last if we've eaten an egg last turn
+          'head': { '$first': '$snake' },
+          'init': { '$cond': {
+            'if': '$eaten',
+            'then': '$snake',
+            'else': { '$slice': [ 
               '$snake',
               0, { '$subtract': [ { '$size': '$snake' }, 1 ] }
             ] }
-          },
-          'in': { '$cond': {
-            # Attempt to move towards negative x (left)
+          } }
+        },
+        'in': { '$cond': {
+          # Attempt to move towards negative x (left)
+          'if': { '$and': [
+            # Check the egg is in this direction
+            { '$gt': [ '$$head.x', '$egg.x' ] },
+            # Check the tile to move to isn't part of the snake
+            # TODO remove one check from each turn by not checking
+            # the head (can't move to nowhere)
+            { '$not': { '$in': [
+              { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, 
+              '$$init' # Don't worry about the last segment
+            ] } }
+          ] },
+          'then': { '$concatArrays': [
+            [ { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ],
+            '$$init'
+          ] },
+          'else': { '$cond': {
+            # Attempt to move towards positive x (right)
             'if': { '$and': [
-              # Check the egg is in this direction
-              { '$gt': [ '$$head.x', '$egg.x' ] },
-              # Check the tile to move to isn't part of the snake
-              # TODO remove one check from each turn by not checking
-              # the head (can't move to nowhere)
+              { '$lt': [ '$$head.x', '$egg.x' ] },
               { '$not': { '$in': [
-                { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, 
-                '$$init' # Don't worry about the last segment
+                { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, 
+                '$$init'
               ] } }
             ] },
             'then': { '$concatArrays': [
-              [ { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ],
+              [ { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ],
               '$$init'
             ] },
             'else': { '$cond': {
-              # Attempt to move towards positive x (right)
+              # Attempt to move towards negative y (up)
               'if': { '$and': [
-                { '$lt': [ '$$head.x', '$egg.x' ] },
+                { '$gt': [ '$$head.y', '$egg.y' ] },
                 { '$not': { '$in': [
-                  { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, 
+                  { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } }, 
                   '$$init'
                 ] } }
               ] },
               'then': { '$concatArrays': [
-                [ { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ],
+                [ { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } } ],
                 '$$init'
               ] },
-              'else': { '$cond': {
-                # Attempt to move towards negative y (up)
-                'if': { '$and': [
-                  { '$gt': [ '$$head.y', '$egg.y' ] },
-                  { '$not': { '$in': [
-                    { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } }, 
-                    '$$init'
-                  ] } }
-                ] },
-                'then': { '$concatArrays': [
-                  [ { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } } ],
-                  '$$init'
-                ] },
-                # Move towards positive y (down)
-                # If we can't then we're dead...
-                'else': { '$concatArrays': [
-                  [ { 'x': '$$head.x', 'y': { '$add': [ '$$head.y', 1 ] } } ],
-                  '$$init'
-                ] }
-              } }
+              # Move towards positive y (down)
+              # If we can't then we're dead...
+              'else': { '$concatArrays': [
+                [ { 'x': '$$head.x', 'y': { '$add': [ '$$head.y', 1 ] } } ],
+                '$$init'
+              ] }
             } }
           } }
-        }
-      }
+        } }
+      } }
     } },
     # Eat the egg logic
-    # Death logic
+    { '$set': { 'eaten': { '$eq': [ '$egg', { '$first': '$snake' } ] } } },
+    { '$set': { 'egg': { '$cond': {
+      'if': '$eaten',
+      'then': { '$let': {
+        'vars': {
+          'freeSpaces': { '$filter': {
+            'input': { '$reduce': {
+              'input': { '$map': {
+                'input': { '$range': [0, SIZE_X] },
+                'as': 'x',
+                'in': { '$map': {
+                  'input': { '$range': [0, SIZE_Y] },
+                  'as': 'y',
+                  'in': { 'x': '$$x', 'y': '$$y' }
+                } }
+              } },
+              'initialValue': [],
+              'in': { '$concatArrays': [ '$$value', '$$this' ] }
+            } },
+            'as': 'tile',
+            'cond': { '$not': { '$in': [ '$$tile', '$snake' ] } }
+          } }
+        },
+        'in': { '$arrayElemAt': [
+          '$$freeSpaces',
+          { '$floor': { '$multiply': [
+            { '$rand': {} },
+            { '$size': '$$freeSpaces' }
+          ] } }
+        ] }
+      } },
+      'else': '$egg'
+    } } } },
     # Regenerate the grid
     { '$set': {
       # Construct a grid to display in charts (requires a double $unwind)
@@ -243,5 +276,5 @@ if __name__ == '__main__':
       input('Hit Enter for the next generation...')
       next_turn(db)
     # while(True): # TODO game win or loss condition
-    #   time.sleep(10)
-    #   next_turn(collection)
+    #   sleep(REFRESH_SECONDS)
+    #   next_turn(db)
