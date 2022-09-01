@@ -136,59 +136,44 @@ def next_turn(db):
             ] }
           } }
         },
-        'in': { '$cond': {
-          # Attempt to move towards negative x (left)
-          'if': { '$and': [
-            # Check the egg is in this direction
-            { '$gt': [ '$$head.x', '$egg.x' ] },
-            # Check the tile to move to isn't part of the snake
-            { '$not': { '$in': [
-              { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, 
-              '$$init' # Don't worry about the last segment
-            ] } },
-            # Check the tile to move to isn't outside of the grid
-            { '$not': { '$lt': [ { '$subtract': [ '$$head.x', 1 ] }, 0 ] } }
-          ] },
-          'then': { '$concatArrays': [
-            [ { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ],
-            '$$init'
-          ] },
-          'else': { '$cond': {
+        'in': { '$switch': {
+          'branches': [ {
+            # Attempt to move towards negative x (left)
+            'case': { '$and': [
+              # Check the egg is in this direction
+              { '$gt': [ '$$head.x', '$egg.x' ] },
+              # Check the tile to move to isn't part of the snake
+              { '$not': { '$in': [ { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, '$$init' ] } },
+              # Check the tile to move to isn't outside of the grid
+              { '$gte': [ { '$subtract': [ '$$head.x', 1 ] }, 0 ] }
+            ] },
+            # Add the new head onto the init array to form the new snake
+            'then': { '$concatArrays': [ [ { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ], '$$init' ] }
+          }, {
             # Attempt to move towards positive x (right)
-            'if': { '$and': [
+            'case': { '$and': [
               { '$lt': [ '$$head.x', '$egg.x' ] },
-              { '$not': { '$in': [
-                { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, 
-                '$$init'
-              ] } },
-              { '$not': { '$gte': [ { '$add': [ '$$head.x', 1 ] }, SIZE_X ] } }
+              { '$not': { '$in': [ { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, '$$init' ] } },
+              { '$lt': [ { '$add': [ '$$head.x', 1 ] }, SIZE_X ] }
             ] },
-            'then': { '$concatArrays': [
-              [ { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ],
-              '$$init'
+            'then': { '$concatArrays': [ [ { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ], '$$init' ] }
+          }, {
+            # Attempt to move towards negative y (up)
+            'case': { '$and': [
+              { '$gt': [ '$$head.y', '$egg.y' ] },
+              { '$not': { '$in': [ { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } }, '$$init' ] } },
+              { '$gte': [ { '$subtract': [ '$$head.y', 1 ] }, 0 ] }
             ] },
-            'else': { '$cond': {
-              # Attempt to move towards negative y (up)
-              'if': { '$and': [
-                { '$gt': [ '$$head.y', '$egg.y' ] },
-                { '$not': { '$in': [
-                  { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } }, 
-                  '$$init'
-                ] } },
-                { '$not': { '$lt': [ { '$subtract': [ '$$head.y', 1 ] }, 0 ] } }
-              ] },
-              'then': { '$concatArrays': [
-                [ { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } } ],
-                '$$init'
-              ] },
-              # Move towards positive y (down)
-              # If we can't then we're dead...
-              'else': { '$concatArrays': [
-                [ { 'x': '$$head.x', 'y': { '$add': [ '$$head.y', 1 ] } } ],
-                '$$init'
-              ] }
-            } }
-          } }
+            'then': { '$concatArrays': [ [ { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } } ], '$$init' ] },
+          }, {
+            # Attempt to move towards positive y (down)
+            'case': { '$and': [
+              { '$lt': [ '$$head.y', '$egg.y' ] },
+              { '$not': { '$in': [ { 'x': '$$head.x', 'y': { '$add': [ '$$head.y', 1 ] } }, '$$init' ] } },
+              { '$lt': [ { '$add': [ '$$head.y', 1 ] }, SIZE_Y ] }
+            ] },
+            'then': { '$concatArrays': [ [ { 'x': '$$head.x', 'y': { '$add': [ '$$head.y', 1 ] } } ], '$$init' ] }
+          } ]
         } }
       } }
     } },
