@@ -142,12 +142,12 @@ def next_turn(db):
             # Check the egg is in this direction
             { '$gt': [ '$$head.x', '$egg.x' ] },
             # Check the tile to move to isn't part of the snake
-            # TODO remove one check from each turn by not checking
-            # the head (can't move to nowhere)
             { '$not': { '$in': [
               { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, 
               '$$init' # Don't worry about the last segment
-            ] } }
+            ] } },
+            # Check the tile to move to isn't outside of the grid
+            { '$not': { '$lt': [ { '$subtract': [ '$$head.x', 1 ] }, 0 ] } }
           ] },
           'then': { '$concatArrays': [
             [ { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ],
@@ -160,7 +160,8 @@ def next_turn(db):
               { '$not': { '$in': [
                 { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, 
                 '$$init'
-              ] } }
+              ] } },
+              { '$not': { '$gte': [ { '$add': [ '$$head.x', 1 ] }, SIZE_X ] } }
             ] },
             'then': { '$concatArrays': [
               [ { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ],
@@ -173,7 +174,8 @@ def next_turn(db):
                 { '$not': { '$in': [
                   { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } }, 
                   '$$init'
-                ] } }
+                ] } },
+                { '$not': { '$lt': [ { '$subtract': [ '$$head.y', 1 ] }, 0 ] } }
               ] },
               'then': { '$concatArrays': [
                 [ { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } } ],
