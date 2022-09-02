@@ -3,17 +3,90 @@ from time import time, sleep
 
 from pymongo import MongoClient, ASCENDING
 
+# Of course we're using Python to make a Snake clone...
+
 # TODO make this config a queryable document
 DB = "snake"
 COLL = "grid"
 # Maximum grid size is 140 x 140
 # Visualisations in Charts have a maximum document count of 20,000
-SIZE_X = 80
-SIZE_Y = 50
+SIZE_X = 8
+SIZE_Y = 5
 START_SIZE = 3
 # Minimum refresh is 10
 # Charts has a minimum refresh rate of 10 seconds
 REFRESH_SECONDS = 10
+
+# Global Stage: Set grid based on head, snake, and egg tiles
+stage_set_grid = { '$set': {
+  'grid': { '$map': {
+    'input': { '$range': [ 0, SIZE_X ] },
+    'as': 'x',
+    'in': { '$map': {
+      'input': { '$range': [ 0, SIZE_Y ] },
+      'as': 'y',
+      'in': {
+        'x': '$$x',
+        'y': '$$y',
+        'colour': { '$switch': {
+          'branches': [ {
+            'case': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$head' ] },
+            'then': 0
+          }, {
+            'case': { '$in': [ { 'x': '$$x', 'y': '$$y' }, '$body' ] },
+            'then': 1
+          }, {
+            'case': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$egg' ] },
+            'then': 2
+          } ],
+          'default': 3
+        } }
+      }
+    } }
+  } }
+} }
+
+# Global Stage: Randomly set egg tile based on available tiles
+stage_set_egg = { '$set': {
+  'egg': { '$cond': {
+    'if': { '$or': [ { '$eq': [ '$turn', 0 ] }, '$eaten' ] },
+    'then': { '$let': {
+      'vars': { 'avblTiles': { '$filter': {
+        # Use $reduce to create flat array of all tiles in grid
+        'input': { '$reduce': {
+          'input': { '$map': {
+            'input': { '$range': [0, SIZE_X] },
+            'as': 'x',
+            'in': { '$map': {
+              'input': { '$range': [0, SIZE_Y] },
+              'as': 'y',
+              'in': { 'x': '$$x', 'y': '$$y' }
+            } }
+          } },
+          'initialValue': [],
+          'in': { '$concatArrays': [ '$$value', '$$this' ] }
+        } },
+        'as': 't',
+        # Keep only tiles that aren't snake head or body
+        'cond': { '$and': [
+          { '$ne': [ '$$t', '$head' ] },
+          { '$not': { '$in': [ '$$t', '$body' ] } }
+        ] }
+      } } },
+      'in': { '$arrayElemAt': [
+        '$$avblTiles',
+        { '$floor': { '$multiply': [
+          { '$rand': {} },
+          { '$size': '$$avblTiles' }
+        ] } }
+      ] }
+    } },
+    'else': '$egg'
+  } }
+} }
+
+# Global Stage: Merge documents into existing collection
+stage_merge = { '$merge': COLL }
 
 
 def init_grid(db):
@@ -30,28 +103,37 @@ def init_grid(db):
   collection.create_index([("turn", -1)])
   collection.insert_one({"turn": 0})
 
-  pipeline = [ {
-    # Stage 1: Randomly set the snake's head tile anywhere on the grid
-    '$set': { 'head': {
+  # Stage 1: Set initial game metadata
+  stage_set_metadata = { '$set': {
+    'eaten': False,
+    'alive': True,
+    'turn': 0
+  } }
+
+  # Stage 2: Randomly set snake head tile anywhere on grid
+  stage_set_head = { '$set': {
+    'head': {
       # Example 1: Random Integer between 0 (inclusive) and N (exclusive)
       'x': { '$floor': { '$multiply': [ { '$rand': {} }, SIZE_X ] } },
       'y': { '$floor': { '$multiply': [ { '$rand': {} }, SIZE_Y ] } }
-    } }
-  }, {
-    # Stage 2: Randomly set the snake's direction based on available tiles
-    # Four possible directions:
-    #   0: Up (-y),
-    #   1: Right (+x),
-    #   2: Down (+y)
-    #   3: Left (-x)
-    '$set': { 'direction': { '$let': {
+    } 
+  } }
+
+  # Stage 3: Randomly set snake direction based on available tiles
+  # Four possible directions:
+  #   0: Up (-y),
+  #   1: Right (+x),
+  #   2: Down (+y)
+  #   3: Left (-x)
+  stage_set_direction = { '$set': {
+    'direction': { '$let': {
       'vars': { 'avblDirs': { '$filter': {
         'input': { '$range': [ 0, 4 ] },
         'as': 'd',
         'cond': { '$switch': { 'branches': [ {
           'case': { '$eq': [ '$$d', 0 ] },
           'then': { '$gte': [
-            # Only need to check last element of snake in each direction
+            # Only need to check last element of snake body in each direction
             # e.g. for up we check head.y - (snake size - 1) > 0 etc.
             { '$subtract': [ '$head.y', { '$subtract': [ START_SIZE, 1 ] } ] },
             0
@@ -79,231 +161,253 @@ def init_grid(db):
       # Example 2: Random Element from an Array
       'in': { '$arrayElemAt': [
         '$$avblDirs',
-        { '$floor': { '$multiply': [ { '$rand': {} }, { '$size': '$$avblDirs' } ] } }
+        { '$floor': { '$multiply': [
+          { '$rand': {} },
+          { '$size': '$$avblDirs' }
+        ] } }
       ] }
-    } } }
-  }, {
-    # Stage 3: Set the snake's body tiles (array of {x, y} objects) based on its direction
-    '$set': { 'snake': { '$concatArrays': [
-        [ '$head' ],
-        { '$map': {
-          'input': { '$range': [ 1, START_SIZE ] },
-          'as': 'offset',
-          'in': { '$switch': { 'branches': [ { 
-            'case': { '$eq': [ '$direction', 0 ] },
-            'then': { 
-              'x': '$head.x',
-              'y': { '$subtract': [ '$head.y', '$$offset' ] } 
-            }
-          }, {
-            'case': { '$eq': [ '$direction', 1 ] },
-            'then': { 
-              'x': { '$add': [ '$head.x', '$$offset' ] },
-              'y': '$head.y' 
-            }
-          }, {
-            'case': { '$eq': [ '$direction', 2 ] },
-            'then': { 
-              'x': '$head.x',
-              'y': { '$add': [ '$head.y', '$$offset' ] } 
-            }
-          }, {
-            'case': { '$eq': [ '$direction', 3 ] },
-            'then': { 
-              'x': { '$subtract': [ '$head.x', '$$offset' ] },
-              'y': '$head.y' 
-            }
-          } ] } }
-        } }
-      ] } }
-  }, {
-    # Stage 4: Randomly set the egg tile based on available tiles
-    '$set': { 'egg': { '$let': {
-      'vars': { 'avblTiles': { '$filter': {
-        'input': { '$reduce': {
-          'input': { '$map': {
-            'input': { '$range': [0, SIZE_X] },
-            'as': 'x',
-            'in': { '$map': {
-              'input': { '$range': [0, SIZE_Y] },
-              'as': 'y',
-              'in': { 'x': '$$x', 'y': '$$y' }
-            } }
-          } },
-          'initialValue': [],
-          'in': { '$concatArrays': [ '$$value', '$$this' ] }
-        } },
-        'as': 'tile',
-        'cond': { '$not': { '$in': [ '$$tile', '$snake' ] } }
-      } } },
-      'in': { '$arrayElemAt': [
-        '$$avblTiles',
-        { '$floor': { '$multiply': [ { '$rand': {} }, { '$size': '$$avblTiles' } ] } }
-      ] }
-    } } }
-  }, {
-    # Stage 5: Set the grid based on snake and egg tiles
-    '$set': { 'grid': { '$map': {
-      'input': { '$range': [ 0, SIZE_X ] },
-      'as': 'x',
-      'in': { '$map': {
-        'input': { '$range': [ 0, SIZE_Y ] },
-        'as': 'y',
-        'in': {
-          'x': '$$x',
-          'y': '$$y',
-          'colour': { '$switch': {
-            'branches': [ {
-              'case': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$head' ] },
-              'then': 0
-            }, {
-              'case': { '$in': [ { 'x': '$$x', 'y': '$$y' }, '$snake' ] },
-              'then': 1
-            }, {
-              'case': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$egg' ] },
-              'then': 2
-            } ],
-            'default': 3
-          } }
+    } }
+  } }
+
+  # Stage 4: Set snake body tiles based on direction
+  stage_set_body = { '$set': {
+    'body': { '$map': {
+      'input': { '$range': [ 1, START_SIZE ] },
+      'as': 'offset',
+      'in': { '$switch': { 'branches': [ { 
+        'case': { '$eq': [ '$direction', 0 ] },
+        'then': { 
+          'x': '$head.x',
+          'y': { '$subtract': [ '$head.y', '$$offset' ] } 
         }
-      } }
-    } } }
-  }, {
-    '$merge': COLL
-  } ]
+      }, {
+        'case': { '$eq': [ '$direction', 1 ] },
+        'then': { 
+          'x': { '$add': [ '$head.x', '$$offset' ] },
+          'y': '$head.y' 
+        }
+      }, {
+        'case': { '$eq': [ '$direction', 2 ] },
+        'then': { 
+          'x': '$head.x',
+          'y': { '$add': [ '$head.y', '$$offset' ] } 
+        }
+      }, {
+        'case': { '$eq': [ '$direction', 3 ] },
+        'then': { 
+          'x': { '$subtract': [ '$head.x', '$$offset' ] },
+          'y': '$head.y' 
+        }
+      } ] } }
+    } }
+  } }
+
+  # Stage 5: Global set egg stage
+  
+  # Stage 6: Global set grid stage
+
+  # Stage 7: Set turn increment
+  stage_set_turn = { '$set': {
+    'turn': { '$add': [ '$turn', 1 ] }
+  } }
+
+  # Stage 8: Global merge stage
+
+  pipeline = [ stage_set_metadata,
+               stage_set_head,
+               stage_set_direction,
+               stage_set_body,
+               stage_set_egg,
+               stage_set_grid,
+               stage_set_turn,
+               stage_merge ]
+
   start = time()
   collection.aggregate(pipeline)
   print('Grid init done in', round(time() - start, 2), 's')
 
 
 def next_turn(db):
-  pipeline = [
-    # Grab the most recent turn document
-    { '$sort': { 'turn': -1 } },
-    { '$limit': 1 },
-    # Snake movement logic, effectively promote the last
-    # element to a new head, moving towards the egg
-    { '$set': {
-      # Increment the turn number while we're here
-      'turn': { '$add': [ '$turn', 1 ] },
-      # Set the new values for the snake array
-      'snake': { '$let': {
-        'vars': {
-          # Borrowing some Seq names from Scala
-          # HTT (head, tail)
-          # IIL (init, last)
-          # NB keep last if we've eaten an egg last turn
-          'head': { '$first': '$snake' },
-          'init': { '$cond': {
-            'if': '$eaten',
-            'then': '$snake',
-            'else': { '$slice': [ 
-              '$snake',
-              0, { '$subtract': [ { '$size': '$snake' }, 1 ] }
-            ] }
-          } }
-        },
-        'in': { '$switch': {
-          'branches': [ {
-            # Attempt to move towards negative x (left)
-            'case': { '$and': [
-              # Check the egg is in this direction
-              { '$gt': [ '$$head.x', '$egg.x' ] },
-              # Check the tile to move to isn't part of the snake
-              { '$not': { '$in': [ { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, '$$init' ] } },
-              # Check the tile to move to isn't outside of the grid
-              { '$gte': [ { '$subtract': [ '$$head.x', 1 ] }, 0 ] }
-            ] },
-            # Add the new head onto the init array to form the new snake
-            'then': { '$concatArrays': [ [ { 'x': { '$subtract': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ], '$$init' ] }
-          }, {
-            # Attempt to move towards positive x (right)
-            'case': { '$and': [
-              { '$lt': [ '$$head.x', '$egg.x' ] },
-              { '$not': { '$in': [ { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' }, '$$init' ] } },
-              { '$lt': [ { '$add': [ '$$head.x', 1 ] }, SIZE_X ] }
-            ] },
-            'then': { '$concatArrays': [ [ { 'x': { '$add': [ '$$head.x', 1 ] }, 'y': '$$head.y' } ], '$$init' ] }
-          }, {
-            # Attempt to move towards negative y (up)
-            'case': { '$and': [
-              { '$gt': [ '$$head.y', '$egg.y' ] },
-              { '$not': { '$in': [ { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } }, '$$init' ] } },
-              { '$gte': [ { '$subtract': [ '$$head.y', 1 ] }, 0 ] }
-            ] },
-            'then': { '$concatArrays': [ [ { 'x': '$$head.x', 'y': { '$subtract': [ '$$head.y', 1 ] } } ], '$$init' ] },
-          }, {
-            # Attempt to move towards positive y (down)
-            'case': { '$and': [
-              { '$lt': [ '$$head.y', '$egg.y' ] },
-              { '$not': { '$in': [ { 'x': '$$head.x', 'y': { '$add': [ '$$head.y', 1 ] } }, '$$init' ] } },
-              { '$lt': [ { '$add': [ '$$head.y', 1 ] }, SIZE_Y ] }
-            ] },
-            'then': { '$concatArrays': [ [ { 'x': '$$head.x', 'y': { '$add': [ '$$head.y', 1 ] } } ], '$$init' ] }
-          } ] # TODO hail mary movement logic, bias towards current facing direction (create a save point when this happens), tune the hyperparameters
-        } }
-      } }
-    } },
-    # Eat the egg logic
-    { '$set': { 'eaten': { '$eq': [ '$egg', { '$first': '$snake' } ] } } },
-    { '$set': { 'egg': { '$cond': {
+
+  # Stage 1: Match only alive games
+  stage_match_alive = { '$match': { 'alive': True } }
+
+  # Stage 2: Set snake new body (i.e. move and/or grow the snake)
+  stage_set_body = { '$set': {
+    'body': { '$cond': {
       'if': '$eaten',
-      'then': { '$let': {
-        'vars': { 'freeTiles': { '$filter': {
-          'input': { '$reduce': {
-            'input': { '$map': {
-              'input': { '$range': [0, SIZE_X] },
-              'as': 'x',
-              'in': { '$map': {
-                'input': { '$range': [0, SIZE_Y] },
-                'as': 'y',
-                'in': { 'x': '$$x', 'y': '$$y' }
-              } }
-            } },
-            'initialValue': [],
-            'in': { '$concatArrays': [ '$$value', '$$this' ] }
-          } },
-          'as': 'tile',
-          'cond': { '$not': { '$in': [ '$$tile', '$snake' ] } }
-        } } },
-        'in': { '$arrayElemAt': [
-          '$$freeTiles',
-          { '$floor': { '$multiply': [ { '$rand': {} }, { '$size': '$$freeTiles' } ] } }
+      # If snake ate last turn, then grow body by prepending head
+      'then': { '$concatArrays': [ [ '$head' ], '$body' ] },
+      # Else move snake by prepending head and slicing off tail
+      'else': { '$concatArrays': [
+        [ '$head' ],
+        { '$slice': [ 
+          '$body', 0, { '$subtract': [ { '$size': '$body' }, 1 ] }
         ] }
-      } },
-      'else': '$egg'
-    } } } },
-    # Regenerate the grid
-    { '$set': {
-      # Construct a grid to display in charts (requires a double $unwind)
-      'grid': { '$map': {
-        'input': { '$range': [ 0, SIZE_X ] },
-        'as': 'x',
-        'in': { '$map': {
-          'input': { '$range': [ 0, SIZE_Y ] },
-          'as': 'y',
-          'in': {
-            'x': '$$x',
-            'y': '$$y',
-            'colour': { '$cond': {
-              'if': { '$in': [ { 'x': '$$x', 'y': '$$y' }, '$snake' ] },
-              'then': 0,
-              'else': { '$cond': {
-                'if': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$egg' ] },
-                'then': 1,
-                'else': 2
-              } }
-            } }
-          }
+      ] }
+    } }
+  } }
+
+  # Stage 3: Set new direction (i.e. decide where to move next)
+  stage_set_direction = { '$set': {
+    'direction': { '$let': {
+      # Narrow down choices of which direction to move in
+      'vars': {
+        # All available directions
+        'avblDirs': { '$filter': {
+          'input': { '$range': [ 0, 4 ] },
+          'as': 'd',
+          'cond': { '$switch': { 'branches': [ {
+            'case': { '$eq': [ '$$d', 0 ] },
+            'then': { '$and': [
+              # Can't move to a tile where the snake body is
+              { '$not': { '$in': [
+                { 'x': '$head.x', 'y': { '$subtract': [ '$head.y', 1 ] } },
+                '$body'
+              ] } },
+              # Can't move out of bounds
+              { '$gte': [ { '$subtract': [ '$head.y', 1 ] }, 0 ] }
+            ] }
+          }, {
+            'case': { '$eq': [ '$$d', 1 ] },
+            'then': { '$and': [
+              { '$not': { '$in': [
+                { 'x': { '$add': [ '$head.x', 1 ] }, 'y': '$head.y' },
+                '$body'
+              ] } },
+              { '$lt': [ { '$add': [ '$head.x', 1 ] }, SIZE_X ] }
+            ] }
+          }, {
+            'case': { '$eq': [ '$$d', 2 ] },
+            'then': { '$and': [
+              { '$not': { '$in': [
+                { 'x': '$head.x', 'y': { '$add': [ '$head.y', 1 ] } },
+                '$body'
+              ] } },
+              { '$lt': [ { '$add': [ '$head.y', 1 ] }, SIZE_Y ] }
+            ] }
+          }, {
+            'case': { '$eq': [ '$$d', 3 ] },
+            'then': { '$and': [
+              { '$not': { '$in': [
+                { 'x': { '$subtract': [ '$head.x', 1 ] }, 'y': '$head.y' },
+                '$body'
+              ] } },
+              { '$gte': [ { '$subtract': [ '$head.x', 1 ] }, 0 ] }
+            ] }
+          } ] } }
+        } },
+        # Directions that bring snake towards egg
+        'eggDirs': { '$filter': {
+          'input': { '$range': [ 0, 4 ] },
+          'as': 'd',
+          'cond': { '$switch': { 'branches': [ {
+            'case': { '$eq': [ '$$d', 0 ] },
+            'then': { '$gt': [ '$head.y', '$egg.y' ] }
+          }, {
+            'case': { '$eq': [ '$$d', 1 ] },
+            'then': { '$lt': [ '$head.x', '$egg.x' ] }
+          }, {
+            'case': { '$eq': [ '$$d', 2 ] },
+            'then': { '$lt': [ '$head.y', '$egg.y' ] }
+          }, {
+            'case': { '$eq': [ '$$d', 3 ] },
+            'then': { '$gt': [ '$head.x', '$egg.x' ] }
+          } ] } }
         } }
+      },
+      'in': { '$switch': {
+        'branches': [ {
+          # If there's only one direction, we have no choice
+          'case': { '$eq': [ { '$size': '$$avblDirs' }, 1 ] },
+          'then': { '$first': '$$avblDirs' }
+        }, {
+          # If the egg is still in the direction we're heading, keep going
+          'case': { '$in': [
+            '$direction', { '$setIntersection': [ '$$avblDirs', '$$eggDirs' ] }
+          ] },
+          'then': '$direction'
+        }, {
+          # Otherwise, if there's an available move towards the egg, do that
+          'case': { '$gt': [
+            { '$size': { '$setIntersection': [ '$$avblDirs', '$$eggDirs' ] } },
+            0
+          ] },
+          # TODO add heuristic for how to decide which way to choose here
+          'then': { '$arrayElemAt': [
+            { '$setIntersection': [ '$$avblDirs', '$$eggDirs' ] },
+            { '$floor': { '$multiply': [
+              { '$rand': {} },
+              { '$size': { '$setIntersection': [ '$$avblDirs', '$$eggDirs' ] } }
+            ] } }
+          ] }
+        }, {
+          # Keep going the way we're heading if available
+          'case': { '$in': [ '$direction', '$$avblDirs' ] },
+          'then': '$direction'
+        } ],
+        # Default is choose a random direction
+        # TODO add heuristic for how to decide which way to choose here
+        'default': { '$arrayElemAt': [
+          '$$avblDirs',
+          { '$floor': { '$multiply': [
+            { '$rand': {} }, { '$size': '$$avblDirs' }
+          ] } }
+        ] }
       } }
-    } },
-    { '$merge': COLL }
-  ]
+    } }
+  } }
+
+  # Stage 4: Set new head based on direction chosen
+  stage_set_head = { '$set': {
+    'head': { '$switch': { 'branches': [ { 
+      'case': { '$eq': [ '$direction', 0 ] },
+      'then': { 
+        'x': '$head.x',
+        'y': { '$subtract': [ '$head.y', 1 ] } 
+      }
+    }, {
+      'case': { '$eq': [ '$direction', 1 ] },
+      'then': { 
+        'x': { '$add': [ '$head.x', 1 ] },
+        'y': '$head.y' 
+      }
+    }, {
+      'case': { '$eq': [ '$direction', 2 ] },
+      'then': { 
+        'x': '$head.x',
+        'y': { '$add': [ '$head.y', 1 ] } 
+      }
+    }, {
+      'case': { '$eq': [ '$direction', 3 ] },
+      'then': { 
+        'x': { '$subtract': [ '$head.x', 1 ] },
+        'y': '$head.y' 
+      }
+    } ] } }
+  } }
+
+  # Stage 5: Very simply, set eaten True if head on egg tile
+  stage_set_eaten = { '$set': { 'eaten': { '$eq': [ '$egg', '$head' ] } } }
+
+  # Stage 6: Global set egg stage
+
+  # Stage 7: Global set grid stage
+
+  # Stage 8: Global merge stage
+
+  pipeline = [ stage_match_alive,
+               stage_set_body,
+               stage_set_direction,
+               stage_set_head,
+               stage_set_eaten,
+               stage_set_egg,
+               stage_set_grid,
+               stage_merge ]
+  
   start = time()
   db.get_collection(COLL).aggregate(pipeline)
   print('Next turn calculated in', round(time() - start, 2), 's')
-
 
 
 def check_mongodb_uri():
