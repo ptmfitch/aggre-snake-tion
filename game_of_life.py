@@ -6,13 +6,19 @@ from pymongo import MongoClient, ASCENDING
 # TODO make this config a queryable document
 DB = "snake"
 COLL = "grid"
-SIZE_X = 5
-SIZE_Y = 5
-SNAKE_START_SIZE = 3
-REFRESH_SECONDS = 3 # Fastest refresh in charts is every 10s
+# Maximum grid size is 140 x 140
+# Visualisations in Charts have a maximum document count of 20,000
+SIZE_X = 80
+SIZE_Y = 50
+START_SIZE = 3
+# Minimum refresh is 10
+# Charts has a minimum refresh rate of 10 seconds
+REFRESH_SECONDS = 10
 
 
 def init_grid(db):
+
+  # TODO validate config, e.g. snake length < SIZE_X or SIZE Y
 
   print("Dropping existing collection")
   db.drop_collection(COLL)
@@ -24,86 +30,147 @@ def init_grid(db):
   collection.create_index([("turn", -1)])
   collection.insert_one({"turn": 0})
 
-  pipeline = [
-    { '$set': {
-      # Randomly place the first egg anywhere
-      'egg': {
-        'x': { '$floor': { '$multiply': [ { '$rand': {} }, SIZE_X ] } },
-        'y': { '$floor': { '$multiply': [ { '$rand': {} }, SIZE_Y ] } }
-      }
-    } }, 
-    { '$set': {
-      'snake': {
-        '$let': {
-          'vars': {
-            # The snake always starts pointing left (negative x),
-            # so needs to be at least SNAKE_START_SIZE away from
-            # the right hand edge
-            # TODO improve by using a random selection from a valid array
-            # of tile windows
-            'x': { '$floor': { '$multiply': [ 
-              { '$rand': {} }, 
-              { '$subtract': [ SIZE_X, SNAKE_START_SIZE ] }
-            ] } },
-            # To avoid the snake spawning on top of the egg, the
-            # initial y value should be on the opposite end
-            'y': {
-              '$cond': {
-                'if': { '$gt': [ '$egg.y', { '$divide': [ SIZE_Y, 2 ] } ] },
-                'then': { '$floor': { '$multiply': [ 
-                  { '$rand': {} },
-                  { '$floor': { '$divide': [ SIZE_Y, 2 ] } }
-                ] } },
-                'else': { '$add': [
-                  { '$floor': { '$multiply': [ 
-                    { '$rand': {} },
-                    { '$divide': [ SIZE_Y, 2 ] } 
-                  ] } },
-                  { '$floor': { '$divide': [ SIZE_Y, 2 ] } }
-                ] }
-              }
+  pipeline = [ {
+    # Stage 1: Randomly set the snake's head tile anywhere on the grid
+    '$set': { 'head': {
+      # Example 1: Random Integer between 0 (inclusive) and N (exclusive)
+      'x': { '$floor': { '$multiply': [ { '$rand': {} }, SIZE_X ] } },
+      'y': { '$floor': { '$multiply': [ { '$rand': {} }, SIZE_Y ] } }
+    } }
+  }, {
+    # Stage 2: Randomly set the snake's direction based on available tiles
+    # Four possible directions:
+    #   0: Up (-y),
+    #   1: Right (+x),
+    #   2: Down (+y)
+    #   3: Left (-x)
+    '$set': { 'direction': { '$let': {
+      'vars': { 'avblDirs': { '$filter': {
+        'input': { '$range': [ 0, 4 ] },
+        'as': 'd',
+        'cond': { '$switch': { 'branches': [ {
+          'case': { '$eq': [ '$$d', 0 ] },
+          'then': { '$gte': [
+            # Only need to check last element of snake in each direction
+            # e.g. for up we check head.y - (snake size - 1) > 0 etc.
+            { '$subtract': [ '$head.y', { '$subtract': [ START_SIZE, 1 ] } ] },
+            0
+          ] }
+        }, {
+          'case': { '$eq': [ '$$d', 1 ] },
+          'then': { '$lt': [
+            { '$add': [ '$head.x', { '$subtract': [ START_SIZE, 1 ] } ] },
+            SIZE_X
+          ] }
+        }, {
+          'case': { '$eq': [ '$$d', 2 ] },
+          'then': { '$lt': [
+            { '$add': [ '$head.y', { '$subtract': [ START_SIZE, 1 ] } ] },
+            SIZE_Y
+          ] }
+        }, {
+          'case': { '$eq': [ '$$d', 3 ] },
+          'then': { '$gte': [
+            { '$subtract': [ '$head.x', { '$subtract': [ START_SIZE, 1 ] } ] },
+            0
+          ] }
+        } ] } }
+      } } },
+      # Example 2: Random Element from an Array
+      'in': { '$arrayElemAt': [
+        '$$avblDirs',
+        { '$floor': { '$multiply': [ { '$rand': {} }, { '$size': '$$avblDirs' } ] } }
+      ] }
+    } } }
+  }, {
+    # Stage 3: Set the snake's body tiles (array of {x, y} objects) based on its direction
+    '$set': { 'snake': { '$concatArrays': [
+        [ '$head' ],
+        { '$map': {
+          'input': { '$range': [ 1, START_SIZE ] },
+          'as': 'offset',
+          'in': { '$switch': { 'branches': [ { 
+            'case': { '$eq': [ '$direction', 0 ] },
+            'then': { 
+              'x': '$head.x',
+              'y': { '$subtract': [ '$head.y', '$$offset' ] } 
             }
-          },
-          # The snake will start with its head to the left and
-          # tail extending to the right
-          'in': {
-            '$map': {
-              'input': { '$range': [0, SNAKE_START_SIZE] },
-              'in': {
-                'x': { '$add': [ '$$x', '$$this' ] },
-                'y': '$$y'
-              }
+          }, {
+            'case': { '$eq': [ '$direction', 1 ] },
+            'then': { 
+              'x': { '$add': [ '$head.x', '$$offset' ] },
+              'y': '$head.y' 
             }
-          }
-        }
-      }
-    } },
-    { '$set': {
-      # Construct a grid to display in charts (requires a double $unwind)
-      'grid': { '$map': {
-        'input': { '$range': [ 0, SIZE_X ] },
-        'as': 'x',
-        'in': { '$map': {
-          'input': { '$range': [ 0, SIZE_Y ] },
-          'as': 'y',
-          'in': {
-            'x': '$$x',
-            'y': '$$y',
-            'colour': { '$cond': {
-              'if': { '$in': [ { 'x': '$$x', 'y': '$$y' }, '$snake' ] },
-              'then': 0,
-              'else': { '$cond': {
-                'if': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$egg' ] },
-                'then': 1,
-                'else': 2
-              } }
-            } }
-          }
+          }, {
+            'case': { '$eq': [ '$direction', 2 ] },
+            'then': { 
+              'x': '$head.x',
+              'y': { '$add': [ '$head.y', '$$offset' ] } 
+            }
+          }, {
+            'case': { '$eq': [ '$direction', 3 ] },
+            'then': { 
+              'x': { '$subtract': [ '$head.x', '$$offset' ] },
+              'y': '$head.y' 
+            }
+          } ] } }
         } }
+      ] } }
+  }, {
+    # Stage 4: Randomly set the egg tile based on available tiles
+    '$set': { 'egg': { '$let': {
+      'vars': { 'avblTiles': { '$filter': {
+        'input': { '$reduce': {
+          'input': { '$map': {
+            'input': { '$range': [0, SIZE_X] },
+            'as': 'x',
+            'in': { '$map': {
+              'input': { '$range': [0, SIZE_Y] },
+              'as': 'y',
+              'in': { 'x': '$$x', 'y': '$$y' }
+            } }
+          } },
+          'initialValue': [],
+          'in': { '$concatArrays': [ '$$value', '$$this' ] }
+        } },
+        'as': 'tile',
+        'cond': { '$not': { '$in': [ '$$tile', '$snake' ] } }
+      } } },
+      'in': { '$arrayElemAt': [
+        '$$avblTiles',
+        { '$floor': { '$multiply': [ { '$rand': {} }, { '$size': '$$avblTiles' } ] } }
+      ] }
+    } } }
+  }, {
+    # Stage 5: Set the grid based on snake and egg tiles
+    '$set': { 'grid': { '$map': {
+      'input': { '$range': [ 0, SIZE_X ] },
+      'as': 'x',
+      'in': { '$map': {
+        'input': { '$range': [ 0, SIZE_Y ] },
+        'as': 'y',
+        'in': {
+          'x': '$$x',
+          'y': '$$y',
+          'colour': { '$switch': {
+            'branches': [ {
+              'case': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$head' ] },
+              'then': 0
+            }, {
+              'case': { '$in': [ { 'x': '$$x', 'y': '$$y' }, '$snake' ] },
+              'then': 1
+            }, {
+              'case': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$egg' ] },
+              'then': 2
+            } ],
+            'default': 3
+          } }
+        }
       } }
-    } },
-    { '$merge': COLL }
-  ]
+    } } }
+  }, {
+    '$merge': COLL
+  } ]
   start = time()
   collection.aggregate(pipeline)
   print('Grid init done in', round(time() - start, 2), 's')
@@ -173,7 +240,7 @@ def next_turn(db):
               { '$lt': [ { '$add': [ '$$head.y', 1 ] }, SIZE_Y ] }
             ] },
             'then': { '$concatArrays': [ [ { 'x': '$$head.x', 'y': { '$add': [ '$$head.y', 1 ] } } ], '$$init' ] }
-          } ]
+          } ] # TODO hail mary movement logic, bias towards current facing direction (create a save point when this happens), tune the hyperparameters
         } }
       } }
     } },
@@ -182,31 +249,26 @@ def next_turn(db):
     { '$set': { 'egg': { '$cond': {
       'if': '$eaten',
       'then': { '$let': {
-        'vars': {
-          'freeSpaces': { '$filter': {
-            'input': { '$reduce': {
-              'input': { '$map': {
-                'input': { '$range': [0, SIZE_X] },
-                'as': 'x',
-                'in': { '$map': {
-                  'input': { '$range': [0, SIZE_Y] },
-                  'as': 'y',
-                  'in': { 'x': '$$x', 'y': '$$y' }
-                } }
-              } },
-              'initialValue': [],
-              'in': { '$concatArrays': [ '$$value', '$$this' ] }
+        'vars': { 'freeTiles': { '$filter': {
+          'input': { '$reduce': {
+            'input': { '$map': {
+              'input': { '$range': [0, SIZE_X] },
+              'as': 'x',
+              'in': { '$map': {
+                'input': { '$range': [0, SIZE_Y] },
+                'as': 'y',
+                'in': { 'x': '$$x', 'y': '$$y' }
+              } }
             } },
-            'as': 'tile',
-            'cond': { '$not': { '$in': [ '$$tile', '$snake' ] } }
-          } }
-        },
+            'initialValue': [],
+            'in': { '$concatArrays': [ '$$value', '$$this' ] }
+          } },
+          'as': 'tile',
+          'cond': { '$not': { '$in': [ '$$tile', '$snake' ] } }
+        } } },
         'in': { '$arrayElemAt': [
-          '$$freeSpaces',
-          { '$floor': { '$multiply': [
-            { '$rand': {} },
-            { '$size': '$$freeSpaces' }
-          ] } }
+          '$$freeTiles',
+          { '$floor': { '$multiply': [ { '$rand': {} }, { '$size': '$$freeTiles' } ] } }
         ] }
       } },
       'else': '$egg'
@@ -265,3 +327,5 @@ if __name__ == '__main__':
     # while(True): # TODO game win or loss condition
     #   sleep(REFRESH_SECONDS)
     #   next_turn(db)
+
+# TODO display in plotly and allow scrolling through history
