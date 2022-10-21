@@ -10,12 +10,12 @@ DB = "snake"
 COLL = "grid"
 # Maximum grid size is 140 x 140
 # Visualisations in Charts have a maximum document count of 20,000
-SIZE_X = 8
-SIZE_Y = 5
+SIZE_X = 5
+SIZE_Y = 4
 START_SIZE = 3
 # Minimum refresh is 10
 # Charts has a minimum refresh rate of 10 seconds
-REFRESH_SECONDS = 10
+REFRESH_SECONDS = 20
 
 # Global Stage: Set grid based on head, snake, and egg tiles
 stage_set_grid = { '$set': {
@@ -31,15 +31,21 @@ stage_set_grid = { '$set': {
         'colour': { '$switch': {
           'branches': [ {
             'case': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$head' ] },
-            'then': 0
+            'then': 9
           }, {
             'case': { '$in': [ { 'x': '$$x', 'y': '$$y' }, '$body' ] },
-            'then': 1
+            # Scale colour percentage based on head -> tail position
+            'then': { '$subtract': [
+              8, { '$multiply': [ { '$divide': [
+                { '$indexOfArray': ['$body', {'x': '$$x', 'y': '$$y'}] },
+                { '$size': '$body' }
+              ] }, 2 ] }
+            ] }
           }, {
             'case': { '$eq': [ { 'x': '$$x', 'y': '$$y' }, '$egg' ] },
-            'then': 2
+            'then': 0
           } ],
-          'default': 3
+          'default': 5
         } }
       }
     } }
@@ -425,11 +431,11 @@ if __name__ == '__main__':
     client = get_mongodb_client(sys.argv[1])
     db = client.get_database(DB)
     init_grid(db)
-    while(True):
-      input('Hit Enter for the next generation...')
-      next_turn(db)
-    # while(True): # TODO game win or loss condition
-    #   sleep(REFRESH_SECONDS)
+    # while(True):
+    #   input('Hit Enter for the next generation...')
     #   next_turn(db)
+    while(True): # TODO game win or loss condition
+      sleep(REFRESH_SECONDS)
+      next_turn(db)
 
 # TODO display in plotly and allow scrolling through history
