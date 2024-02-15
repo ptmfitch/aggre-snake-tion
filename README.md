@@ -39,5 +39,5 @@ To see the game in action, I'm using a chart in MongoDB Atlas Charts that is set
 
 - Open Charts
 - Click the dropdown on Add Dashboard
-- Select "Import dashboard"
+- Select "Import dashboard" and upload snake.charts from this repo
 - Update the data set settings to your cluster
