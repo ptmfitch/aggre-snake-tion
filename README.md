@@ -1,26 +1,23 @@
-# Game of Life with the MongoDB Aggregation Pipeline
+# Classic Arcade Game Snake with the MongoDB Aggregation Pipeline
 
-This repo contains an implementation of the Game of Life using the MongoDB Aggregation Framework.
-
-![Game of Life GIF](game_of_life_small.gif)
+This repo contains an implementation of the Classic Arcade Game using the MongoDB Aggregation Framework.
 
 # How to get started
 
-Update the parameters in the `game_of_life.py` program:
+Update the parameters in the `simulation.py` program:
 
 ```python
-DB = "game_of_life"
-COLL = "coll"
-START_RATIO_ALIVE_CELLS = 0.4
-SIZE_X = 50
-SIZE_Y = 50
-NB_GEN = 50
+DB = "snake"
+COLL = "grid"
+SIZE_X = 5
+SIZE_Y = 4
+START_SIZE = 3
 ```
 
 Then you can just start the program and point to a MongoDB instance of your choice:
 
 ```shell
-python3.9 game_of_life.py "mongodb+srv://USER:PASSWORD@gameoflife.abcde.mongodb.net/test?w=1"
+python3.9 simulation.py "mongodb+srv://USER:PASSWORD@CLUSTER.mongodb.net/"
 ```
 
 # Visualization
