@@ -1,13 +1,14 @@
 import sys
 from time import time, sleep
 
-from pymongo import MongoClient, ASCENDING
+from pymongo import MongoClient, ASCENDING, errors
 
 # Of course we're using Python to make a Snake clone...
 
-# TODO make this config a queryable document
 DB = "snake"
 COLL = "grid"
+TURN_BASED = False
+
 # Maximum grid size is 140 x 140
 # Visualisations in Charts have a maximum document count of 20,000
 SIZE_X = 5
@@ -96,8 +97,6 @@ stage_merge = { '$merge': COLL }
 
 
 def init_grid(db):
-
-  # TODO validate config, e.g. snake length < SIZE_X or SIZE Y
 
   print("Dropping existing collection")
   db.drop_collection(COLL)
@@ -339,7 +338,6 @@ def next_turn(db):
             { '$size': { '$setIntersection': [ '$$avblDirs', '$$eggDirs' ] } },
             0
           ] },
-          # TODO add heuristic for how to decide which way to choose here
           'then': { '$arrayElemAt': [
             { '$setIntersection': [ '$$avblDirs', '$$eggDirs' ] },
             { '$floor': { '$multiply': [
@@ -353,7 +351,6 @@ def next_turn(db):
           'then': '$direction'
         } ],
         # Default is choose a random direction
-        # TODO add heuristic for how to decide which way to choose here
         'default': { '$arrayElemAt': [
           '$$avblDirs',
           { '$floor': { '$multiply': [
@@ -426,16 +423,32 @@ def get_mongodb_client(uri):
     return MongoClient(uri)
 
 
+def game_over(turns):
+   print("GAME OVER!")
+   print("Turns: {}".format(turns))
+
+
 if __name__ == '__main__':
     check_mongodb_uri()
     client = get_mongodb_client(sys.argv[1])
     db = client.get_database(DB)
     init_grid(db)
-    # while(True):
-    #   input('Hit Enter for the next generation...')
-    #   next_turn(db)
-    while(True): # TODO game win or loss condition
-      sleep(REFRESH_SECONDS)
-      next_turn(db)
+    turns = 0
+    try:
+      if not TURN_BASED:
+        print("Running in automatic mode")
+        while(True):
+          sleep(REFRESH_SECONDS)
+          next_turn(db)
+          turns += 1
+      else:
+        print("Running in turn-based mode")
+        while(True):
+          input('Hit Enter for the next generation...')
+          next_turn(db)
+          turns += 1
+    except errors.OperationFailure:
+      game_over(turns)
+    
+      
 
-# TODO display in plotly and allow scrolling through history

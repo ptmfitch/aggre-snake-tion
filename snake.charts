@@ -1,0 +1,126 @@
+{
+  "dashboards": {
+    "dashboard-1": {
+      "description": "",
+      "embedding": {},
+      "filters": [],
+      "layout": [
+        {
+          "h": 5,
+          "i": "item-1",
+          "w": 8,
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "title": "Aggre-snake-tion"
+    }
+  },
+  "dataSources": {
+    "data-source-1": {
+      "alias": "grid",
+      "collection": "grid",
+      "database": "snake",
+      "deployment": "dev-sandbox",
+      "sourceType": "cluster"
+    }
+  },
+  "exportVersion": 6,
+  "items": {
+    "item-1": {
+      "calculatedFields": [],
+      "channels": {
+        "color": {
+          "aggregate": "sum",
+          "channelType": "aggregation",
+          "field": "grid.colour",
+          "inferredType": "Number",
+          "type": "quantitative"
+        },
+        "x": {
+          "channelType": "category",
+          "field": "grid.x",
+          "inferredType": "Number",
+          "isBinning": false,
+          "quantitativeBinning": {
+            "binSize": 10
+          },
+          "type": "nominal"
+        },
+        "y": {
+          "channelType": "category",
+          "field": "grid.y",
+          "inferredType": "Number",
+          "isBinning": false,
+          "quantitativeBinning": {
+            "binSize": 10
+          },
+          "type": "nominal"
+        }
+      },
+      "chartType": "Heatmap",
+      "convertedFields": [],
+      "customisations": {
+        "axes": {
+          "x": {
+            "categoryLabelAngle": {
+              "enabled": true,
+              "value": "vertical"
+            }
+          }
+        },
+        "channels": {
+          "color": {
+            "numberFormatting": {
+              "enabled": true,
+              "value": "Default"
+            }
+          },
+          "x": {
+            "numberFormatting": {
+              "enabled": true,
+              "value": "Default"
+            }
+          },
+          "y": {
+            "numberFormatting": {
+              "enabled": true,
+              "value": "Default"
+            }
+          }
+        },
+        "conditionalFormatting": [],
+        "options": {
+          "colorContinuous": {
+            "enabled": true,
+            "value": {
+              "color": "pinkyellowgreen",
+              "reverse": false
+            }
+          },
+          "legendPosition": {
+            "enabled": false,
+            "value": "right"
+          }
+        }
+      },
+      "dashboardId": "dashboard-1",
+      "dataSourceId": "data-source-1",
+      "description": "",
+      "embedding": {},
+      "filters": [],
+      "iconValue": "heatmap",
+      "interactiveFiltering": "highlight",
+      "itemType": "chart",
+      "lookupFields": [],
+      "meta": {},
+      "missedFields": [],
+      "query": "[{\n $sort: {\n  turn: -1\n }\n}, {\n $limit: 1\n}, {\n $unwind: {\n  path: '$grid'\n }\n}, {\n $unwind: {\n  path: '$grid'\n }\n}]",
+      "queryId": null,
+      "reductions": {},
+      "sample": false,
+      "title": ""
+    }
+  },
+  "queries": {}
+}
